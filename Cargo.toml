@@ -1,10 +1,10 @@
 [package]
 name = "opendisplay-win"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Windows sender for OpenDisplay: extend a Windows desktop onto an iPad/iPhone running the OpenDisplay receiver"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [[bin]]
 name = "opendisplay-win"
