@@ -1,0 +1,30 @@
+// Icons: 1 = app / waiting, 2 = streaming, 3 = warning (see packaging/make_icons.py).
+1 ICON "opendisplay.ico"
+2 ICON "active.ico"
+3 ICON "warning.ico"
+
+// RT_MANIFEST (24), id 1: Common Controls v6, PerMonitorV2 DPI awareness.
+1 24 "opendisplay.manifest"
+
+1 VERSIONINFO
+FILEVERSION     VER_MAJOR,VER_MINOR,VER_PATCH,0
+PRODUCTVERSION  VER_MAJOR,VER_MINOR,VER_PATCH,0
+FILEOS          0x40004
+FILETYPE        0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "OpenDisplay sender for Windows"
+      VALUE "ProductName", "OpenDisplay for Windows"
+      VALUE "FileVersion", VER_STRING
+      VALUE "ProductVersion", VER_STRING
+      VALUE "LegalCopyright", "GPL-3.0-only"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -1,0 +1,63 @@
+[package]
+name = "opendisplay-win"
+version = "0.2.1"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Windows sender for OpenDisplay: extend a Windows desktop onto an iPad/iPhone running the OpenDisplay receiver"
+rust-version = "1.85"
+
+[[bin]]
+name = "opendisplay-win"
+path = "src/main.rs"
+
+[dependencies]
+# The sans-I/O protocol core shared with the official Linux sender (PROTOCOL.md pv 3).
+opendisplay-proto = { git = "https://github.com/peetzweg/opendisplay", rev = "8fcd84a5706f8909a17a163e4001312c8fa72d8f" }
+opendisplay-session = { git = "https://github.com/peetzweg/opendisplay", rev = "8fcd84a5706f8909a17a163e4001312c8fa72d8f" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+mdns-sd = "0.21"
+png = "0.18"
+base64 = "0.22"
+plist = "1"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Ioctl",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
