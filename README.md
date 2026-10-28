@@ -13,7 +13,7 @@ far only had a Mac version for the computer side. This is the Windows side.
 ### 1. Download and unzip
 
 Download **OpenDisplay-Windows-x.y.z.zip** from the
-[latest release](https://github.com/vhdlmike/opendisplay-win/releases/latest) and
+[latest release](https://github.com/vhdlmike-labs/opendisplay-win/releases/latest) and
 unzip it to a folder you keep, e.g. `Documents\OpenDisplay`.
 
 ### 2. Install the virtual screen (once)
@@ -93,7 +93,7 @@ Click the icon (left or right button) to open the menu:
 | Icon is amber and the iPad mirrors | Run `Install virtual display.cmd` again. It also repairs the virtual screen if it got stuck. |
 | The iPad disconnects every second or two | Another computer or a second copy of OpenDisplay is connected to the same iPad. Only one can use it at a time. |
 | USB not found | Install the **Apple Devices** app (Microsoft Store), unlock the iPad, and tap *Trust* if it asks. |
-| Anything else | Turn on **Write log file** in the menu, reproduce the problem, then **Open log file** and include it in an [issue](https://github.com/vhdlmike/opendisplay-win/issues). |
+| Anything else | Turn on **Write log file** in the menu, reproduce the problem, then **Open log file** and include it in an [issue](https://github.com/vhdlmike-labs/opendisplay-win/issues). |
 
 **Uninstall:** quit OpenDisplay, double-click `Uninstall virtual display.cmd`,
 then delete the folder.
