@@ -31,6 +31,8 @@ pub struct RunConfig {
     pub stay: bool,
     /// Keep looking until a receiver appears.
     pub wait: bool,
+    /// Battery saver: 30 fps cap, lower bitrate, fastest encoder preset.
+    pub battery_saver: bool,
 }
 
 impl Default for RunConfig {
@@ -44,6 +46,7 @@ impl Default for RunConfig {
             software_encoder: false,
             stay: true,
             wait: true,
+            battery_saver: false,
         }
     }
 }
@@ -100,15 +103,21 @@ pub fn run(cfg: &RunConfig, stop: Arc<AtomicBool>, status: Option<StatusFn>) -> 
     };
     let backend = backend(&cfg.display, cfg.resize);
     info!("display: {}", backend.name());
+    let mut desktop = cfg.desktop;
+    if cfg.battery_saver {
+        let cap = session::POWER_SAVING_FPS;
+        desktop.max_fps = Some(desktop.max_fps.map_or(cap, |f| f.min(cap)));
+    }
     let r = session::run(
         target,
         backend,
         session::Options {
-            desktop: cfg.desktop,
+            desktop,
             bitrate: cfg.bitrate,
             software_encoder: cfg.software_encoder,
             exit_on_close: !cfg.stay,
             status: status.clone(),
+            power_saving: cfg.battery_saver,
         },
         stop,
     );

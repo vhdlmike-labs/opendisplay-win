@@ -26,6 +26,8 @@ use windows::core::{PCWSTR, w};
 
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_STATUS: u32 = WM_APP + 2;
+/// Open the menu next to the icon (keyboard activation, scripted screenshots).
+const WM_MENU_AT_ICON: u32 = WM_APP + 3;
 
 const ID_STATUS: usize = 1;
 const ID_EXTEND: usize = 10;
@@ -33,6 +35,9 @@ const ID_MIRROR: usize = 11;
 const ID_CONN_AUTO: usize = 20;
 const ID_CONN_USB: usize = 21;
 const ID_CONN_WIFI: usize = 22;
+const ID_SAVER_OFF: usize = 40;
+const ID_SAVER_ON: usize = 41;
+const ID_SAVER_AUTO: usize = 42;
 const ID_AUTOSTART: usize = 30;
 const ID_LOG: usize = 31;
 const ID_OPEN_LOG: usize = 32;
@@ -71,11 +76,29 @@ enum Connection {
     Wifi,
 }
 
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+enum BatterySaver {
+    #[default]
+    Off,
+    On,
+    /// On while the PC runs on battery or Windows' energy saver is on.
+    Auto,
+}
+
+/// Running on battery, or Windows' battery/energy saver is on.
+fn on_battery() -> bool {
+    let mut ps = windows::Win32::System::Power::SYSTEM_POWER_STATUS::default();
+    let ok = unsafe { windows::Win32::System::Power::GetSystemPowerStatus(&mut ps).is_ok() };
+    ok && (ps.ACLineStatus == 0 || ps.SystemStatusFlag == 1)
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Settings {
     display: DisplayMode,
     connection: Connection,
+    battery_saver: BatterySaver,
     log_file: bool,
 }
 
@@ -108,8 +131,17 @@ impl Settings {
         }
     }
 
+    fn saver_active(&self) -> bool {
+        match self.battery_saver {
+            BatterySaver::Off => false,
+            BatterySaver::On => true,
+            BatterySaver::Auto => on_battery(),
+        }
+    }
+
     fn run_config(&self) -> RunConfig {
         RunConfig {
+            battery_saver: self.saver_active(),
             to: match self.connection {
                 Connection::Auto => None,
                 Connection::Usb => Some("usb".into()),
@@ -232,6 +264,8 @@ struct Ui {
     settings: Settings,
     control: Sender<Control>,
     last: TrayStatus,
+    /// Battery saver state the running session was started with.
+    saver_applied: bool,
 }
 
 thread_local! {
@@ -263,6 +297,15 @@ enum Action {
 
 impl Ui {
     fn status_text(&self) -> (String, u16) {
+        let (text, icon) = self.base_status_text();
+        if self.saver_applied && matches!(self.last, TrayStatus::Status(Status::Streaming { .. })) {
+            (format!("{text} (battery saver)"), icon)
+        } else {
+            (text, icon)
+        }
+    }
+
+    fn base_status_text(&self) -> (String, u16) {
         let mirror_chosen = self.settings.display == DisplayMode::Mirror;
         match &self.last {
             TrayStatus::Starting | TrayStatus::Status(Status::Searching) => (
@@ -331,6 +374,7 @@ impl Ui {
 
     fn apply(&mut self) {
         self.settings.save();
+        self.saver_applied = self.settings.saver_active();
         LOG_ON.store(self.settings.log_file, Ordering::Relaxed);
         self.last = TrayStatus::Starting;
         self.notify(NIM_MODIFY, None);
@@ -349,29 +393,38 @@ impl Ui {
             add(menu, MF_STRING | MF_GRAYED, ID_STATUS, &self.status_text().0);
             add(menu, MF_SEPARATOR, 0, "");
 
-            add(menu, MF_STRING | check(self.settings.display == DisplayMode::Extend), ID_EXTEND, "Extend: use as a second screen");
-            add(menu, MF_STRING | check(self.settings.display == DisplayMode::Mirror), ID_MIRROR, "Mirror the main screen");
+            add(menu, MF_STRING | check(self.settings.display == DisplayMode::Extend), ID_EXTEND, "&Extend: use as a second screen");
+            add(menu, MF_STRING | check(self.settings.display == DisplayMode::Mirror), ID_MIRROR, "&Mirror the main screen");
             add(menu, MF_SEPARATOR, 0, "");
 
             if let Ok(conn) = CreatePopupMenu() {
                 let c = self.settings.connection;
-                add(conn, MF_STRING | check(c == Connection::Auto), ID_CONN_AUTO, "Automatic (USB, else Wi-Fi)");
-                add(conn, MF_STRING | check(c == Connection::Usb), ID_CONN_USB, "USB cable only");
-                add(conn, MF_STRING | check(c == Connection::Wifi), ID_CONN_WIFI, "Wi-Fi only");
-                let t = wide("Connection");
+                add(conn, MF_STRING | check(c == Connection::Auto), ID_CONN_AUTO, "&Automatic (USB, else Wi-Fi)");
+                add(conn, MF_STRING | check(c == Connection::Usb), ID_CONN_USB, "&USB cable only");
+                add(conn, MF_STRING | check(c == Connection::Wifi), ID_CONN_WIFI, "&Wi-Fi only");
+                let t = wide("&Connection");
                 let _ = AppendMenuW(menu, MF_POPUP, conn.0 as usize, PCWSTR(t.as_ptr()));
             }
-            add(menu, MF_STRING | check(autostart_enabled()), ID_AUTOSTART, "Start with Windows");
-            add(menu, MF_STRING | check(self.settings.log_file), ID_LOG, "Write log file");
+            if let Ok(saver) = CreatePopupMenu() {
+                let b = self.settings.battery_saver;
+                add(saver, MF_STRING | check(b == BatterySaver::Off), ID_SAVER_OFF, "O&ff: smoothest (up to 60 fps)");
+                add(saver, MF_STRING | check(b == BatterySaver::On), ID_SAVER_ON, "&On: 30 fps, less GPU and battery use");
+                add(saver, MF_STRING | check(b == BatterySaver::Auto), ID_SAVER_AUTO, "&Automatic: on when running on battery");
+                let label = if self.settings.saver_active() { "&Battery saver (active)" } else { "&Battery saver" };
+                let t = wide(label);
+                let _ = AppendMenuW(menu, MF_POPUP, saver.0 as usize, PCWSTR(t.as_ptr()));
+            }
+            add(menu, MF_STRING | check(autostart_enabled()), ID_AUTOSTART, "&Start with Windows");
+            add(menu, MF_STRING | check(self.settings.log_file), ID_LOG, "Write &log file");
             if log_path().exists() {
-                add(menu, MF_STRING, ID_OPEN_LOG, "Open log file");
+                add(menu, MF_STRING, ID_OPEN_LOG, "O&pen log file");
             }
             if !driver::installed() {
                 add(menu, MF_SEPARATOR, 0, "");
-                add(menu, MF_STRING, ID_INSTALL_DRIVER, "Install virtual display driver...");
+                add(menu, MF_STRING, ID_INSTALL_DRIVER, "&Install virtual display driver...");
             }
             add(menu, MF_SEPARATOR, 0, "");
-            add(menu, MF_STRING, ID_QUIT, "Quit OpenDisplay");
+            add(menu, MF_STRING, ID_QUIT, "&Quit OpenDisplay");
 
             Some(menu)
         }
@@ -397,6 +450,21 @@ impl Ui {
                 if s.connection != c {
                     s.connection = c;
                     self.apply();
+                }
+            }
+            ID_SAVER_OFF | ID_SAVER_ON | ID_SAVER_AUTO => {
+                let b = match id {
+                    ID_SAVER_ON => BatterySaver::On,
+                    ID_SAVER_AUTO => BatterySaver::Auto,
+                    _ => BatterySaver::Off,
+                };
+                if s.battery_saver != b {
+                    s.battery_saver = b;
+                    if self.settings.saver_active() != self.saver_applied {
+                        self.apply();
+                    } else {
+                        self.settings.save();
+                    }
                 }
             }
             ID_AUTOSTART => set_autostart(!autostart_enabled()),
@@ -494,12 +562,29 @@ fn quit() {
     unsafe { PostQuitMessage(0) };
 }
 
-/// Show the tray menu at the cursor and run the chosen command.
-fn show_menu(hwnd: HWND) {
+/// Where the tray icon is on screen, if it is visible.
+fn icon_anchor(hwnd: HWND) -> Option<POINT> {
+    let id = NOTIFYICONIDENTIFIER {
+        cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        ..Default::default()
+    };
+    let r = unsafe { Shell_NotifyIconGetRect(&id).ok()? };
+    Some(POINT { x: (r.left + r.right) / 2, y: r.top })
+}
+
+/// Show the tray menu (at the cursor, or above the icon) and run the chosen command.
+fn show_menu(hwnd: HWND, at_icon: bool) {
     let Some(menu) = with_ui(|ui| ui.build_menu()).flatten() else { return };
     let cmd = unsafe {
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
+        if at_icon {
+            if let Some(p) = icon_anchor(hwnd) {
+                pt = p;
+            }
+        }
         // Required so the menu closes when clicking elsewhere.
         let _ = SetForegroundWindow(hwnd);
         // Modal: pumps messages, so no UI borrow may be held here.
@@ -525,8 +610,12 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         WM_TRAY => {
             let event = lparam.0 as u32;
             if event == WM_LBUTTONUP || event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
-                show_menu(hwnd);
+                show_menu(hwnd, false);
             }
+            Some(LRESULT(0))
+        }
+        WM_MENU_AT_ICON => {
+            show_menu(hwnd, true);
             Some(LRESULT(0))
         }
         // Menu commands also arrive this way (e.g. posted by tests or scripts).
@@ -542,6 +631,18 @@ fn handle(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESUL
         WM_CLOSE => {
             quit();
             Some(LRESULT(0))
+        }
+        // Charger plugged in/out or energy saver toggled: follow it in Automatic.
+        WM_POWERBROADCAST => {
+            if wparam.0 == PBT_APMPOWERSTATUSCHANGE as usize {
+                with_ui(|ui| {
+                    if ui.settings.battery_saver == BatterySaver::Auto && ui.settings.saver_active() != ui.saver_applied {
+                        tracing::info!("power source changed; battery saver {}", if on_battery() { "on" } else { "off" });
+                        ui.apply();
+                    }
+                });
+            }
+            Some(LRESULT(1))
         }
         WM_QUERYENDSESSION => Some(LRESULT(1)),
         WM_ENDSESSION => {
@@ -635,10 +736,12 @@ fn main() {
                 settings,
                 control: tx,
                 last: TrayStatus::Starting,
+                saver_applied: false,
             })
         });
         with_ui(|ui| {
             ui.notify(NIM_ADD, None);
+            ui.saver_applied = ui.settings.saver_active();
             let _ = ui.control.send(Control::Apply(ui.settings.run_config()));
         });
 

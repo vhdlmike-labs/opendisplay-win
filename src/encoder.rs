@@ -156,6 +156,8 @@ pub struct EncoderConfig {
     pub fps: u32,
     pub bitrate: u32,
     pub prefer_software: bool,
+    /// Battery saver: favour encoder speed (less GPU/CPU time per frame).
+    pub low_power: bool,
 }
 
 pub struct Encoded {
@@ -274,7 +276,9 @@ impl Encoder {
                 set_codec(c, &CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32), "no B-frames");
                 // Periodic keyframes off: IDRs only on demand (§5.3).
                 set_codec(c, &CODECAPI_AVEncMPVGOPSize, VARIANT::from(cfg.fps * 3600), "GOP");
-                set_codec(c, &CODECAPI_AVEncCommonQualityVsSpeed, VARIANT::from(60u32), "quality/speed");
+                // 0 = fastest (least work), 100 = best quality per bit.
+                let qvs = if cfg.low_power { 0u32 } else { 60 };
+                set_codec(c, &CODECAPI_AVEncCommonQualityVsSpeed, VARIANT::from(qvs), "quality/speed");
             }
             // Output type first, then input (encoder MFT rule).
             mft.SetOutputType(0, &media_type(&MFVideoFormat_H264, cfg)?, 0)

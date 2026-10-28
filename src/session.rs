@@ -39,7 +39,14 @@ pub struct Options {
     pub exit_on_close: bool,
     /// Told about state changes (the tray app shows them).
     pub status: Option<StatusFn>,
+    /// Battery saver: lower bitrate, fastest encoder preset, slower cursor
+    /// polling. (The frame-rate cap is applied through `desktop.max_fps`.)
+    pub power_saving: bool,
 }
+
+/// Battery saver: frame-rate cap and bitrate share.
+pub const POWER_SAVING_FPS: f32 = 30.0;
+const POWER_SAVING_BITRATE: f64 = 0.6;
 
 /// What the sender is doing, for a UI.
 #[derive(Debug, Clone, PartialEq)]
@@ -187,6 +194,7 @@ impl Pipeline {
         fps: u32,
         bitrate: u32,
         software: bool,
+        low_power: bool,
         force_idr: Arc<AtomicBool>,
         in_flight: Arc<AtomicUsize>,
         events: Sender<Event>,
@@ -200,7 +208,7 @@ impl Pipeline {
                     error!("{e:#}");
                     return;
                 }
-                let cfg = EncoderConfig { width, height, fps, bitrate, prefer_software: software };
+                let cfg = EncoderConfig { width, height, fps, bitrate, prefer_software: software, low_power };
                 while !s.load(Ordering::Relaxed) {
                     if let Err(e) = pipeline_loop(&device_name, &cfg, &s, &force_idr, &in_flight, &events) {
                         warn!("capture/encode restarting: {e:#}");
@@ -285,7 +293,13 @@ fn pipeline_loop(
 }
 
 /// Polls the pointer and sprite for the streamed monitor.
-fn cursor_thread(rect: Arc<Mutex<RECT>>, resend: Arc<AtomicBool>, stop: Arc<AtomicBool>, events: Sender<Event>) {
+fn cursor_thread(
+    rect: Arc<Mutex<RECT>>,
+    resend: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    events: Sender<Event>,
+    poll: Duration,
+) {
     let mut last: Option<CursorPos> = None;
     let mut last_handle = None;
     // Re-send a still pointer now and then: a lost first datagram would
@@ -320,7 +334,7 @@ fn cursor_thread(rect: Arc<Mutex<RECT>>, resend: Arc<AtomicBool>, stop: Arc<Atom
                 return;
             }
         }
-        std::thread::sleep(Duration::from_millis(8));
+        std::thread::sleep(poll);
     }
 }
 
@@ -548,7 +562,13 @@ fn connection(
                     fit_stream(monitor.size(), (plan.stream.width, plan.stream.height))
                 };
                 let fps = plan.stream.fps;
-                let bitrate = opts.bitrate.unwrap_or_else(|| default_bitrate(sw, sh, fps, usb));
+                let bitrate = opts.bitrate.unwrap_or_else(|| {
+                    let b = default_bitrate(sw, sh, fps, usb);
+                    if opts.power_saving { (b as f64 * POWER_SAVING_BITRATE) as u32 } else { b }
+                });
+                if opts.power_saving {
+                    info!("battery saver: {fps} fps cap, {:.1} Mbit/s, fastest encoder preset", bitrate as f64 / 1e6);
+                }
                 info!(
                     "streaming {} {} ({}x{} at {:?}) as {sw}x{sh}@{fps}",
                     monitor.device_name, monitor.friendly, monitor.size().0, monitor.size().1,
@@ -577,7 +597,8 @@ fn connection(
                 }
                 if cursor_handle.is_none() {
                     let (r, s, st, t) = (cursor_rect.clone(), cursor_resend.clone(), cursor_stop.clone(), tx.clone());
-                    cursor_handle = Some(std::thread::spawn(move || cursor_thread(r, s, st, t)));
+                    let poll = Duration::from_millis(if opts.power_saving { 16 } else { 8 });
+                    cursor_handle = Some(std::thread::spawn(move || cursor_thread(r, s, st, t, poll)));
                 }
                 force_idr.store(true, Ordering::Relaxed);
                 pipeline = Some(Pipeline::start(
@@ -587,6 +608,7 @@ fn connection(
                     fps,
                     bitrate,
                     opts.software_encoder,
+                    opts.power_saving,
                     force_idr.clone(),
                     in_flight.clone(),
                     tx.clone(),

@@ -71,5 +71,7 @@ os.makedirs(outdir, exist_ok=True)
 for name, screen in SCREENS.items():
     imgs = [(n, png(n, render(n, screen))) for n in SIZES]
     open(os.path.join(outdir, name + ".ico"), "wb").write(ico(imgs))
-    open(os.path.join(outdir, name + "-32.png"), "wb").write(imgs[3][1])
+    if len(sys.argv) > 2:  # 32 px PNGs for the README's state table
+        names = {"opendisplay": "waiting", "active": "active", "warning": "warning"}
+        open(os.path.join(sys.argv[2], f"state-{names[name]}.png"), "wb").write(imgs[3][1])
 print("icons written to", outdir)

@@ -46,6 +46,8 @@ The icon shows the state:
 Hover over it for details, click it (left or right) for the menu:
    Extend: use as a second screen / Mirror the main screen
    Connection: Automatic (USB, else Wi-Fi) / USB cable only / Wi-Fi only
+   Battery saver: Off (smoothest, up to 60 fps) / On (30 fps, less GPU and
+      battery use, picture stays sharp) / Automatic (on while on battery)
    Start with Windows
    Write log file / Open log file
    Install virtual display driver... (only shown when it is missing)

@@ -69,6 +69,9 @@ struct RunArgs {
     /// Keep looking until a receiver appears instead of giving up.
     #[arg(long)]
     wait: bool,
+    /// Battery saver: 30 fps cap, lower bitrate, fastest encoder preset.
+    #[arg(long)]
+    battery_saver: bool,
     /// Stop after this many seconds (scripted tests).
     #[arg(long = "for", value_name = "SECONDS")]
     duration: Option<f64>,
@@ -112,6 +115,14 @@ enum Command {
     InstallDriver,
     /// Remove the virtual display driver (asks for admin rights).
     UninstallDriver,
+    /// Save a monitor as a lossless PNG (pointer not included), e.g. for docs.
+    #[command(hide = true)]
+    Screenshot {
+        #[arg(long, default_value = "primary")]
+        display: String,
+        #[arg(long, default_value = "screenshot.png")]
+        out: String,
+    },
     /// Capture a monitor and encode it to an .h264 file (no receiver needed).
     Probe {
         #[arg(long, default_value = "primary")]
@@ -203,7 +214,7 @@ fn main() {
 }
 
 fn run(args: RunArgs, silent: bool) -> Result<()> {
-    let RunArgs { to, display, resize, scale, max_fps, bitrate, software_encoder, stay, wait, duration } = args;
+    let RunArgs { to, display, resize, scale, max_fps, bitrate, software_encoder, stay, wait, battery_saver, duration } = args;
     let stop = STOP.get_or_init(|| Arc::new(AtomicBool::new(false))).clone();
     unsafe {
         let _ = windows::Win32::System::Console::SetConsoleCtrlHandler(Some(on_console_event), true);
@@ -232,6 +243,7 @@ fn run(args: RunArgs, silent: bool) -> Result<()> {
         software_encoder,
         stay,
         wait,
+        battery_saver,
     };
     let r = app::run(&cfg, stop, None);
     CLEANED_UP.store(true, Ordering::Relaxed);
@@ -296,6 +308,7 @@ fn real_main(cli: Cli) -> Result<()> {
         }
         Command::InstallDriver => driver::install()?,
         Command::UninstallDriver => driver::uninstall()?,
+        Command::Screenshot { display, out } => screenshot(&display, &out)?,
         Command::Probe { display, width, height, frames, out, software_encoder } => {
             probe(&display, width, height, frames, &out, software_encoder)?;
         }
@@ -329,6 +342,56 @@ fn print_monitors(with_modes: bool) {
     }
 }
 
+fn screenshot(display: &str, out: &str) -> Result<()> {
+    use windows::Win32::Graphics::Direct3D11::*;
+    let monitor = ExistingMonitor::new(app::monitor_name(display), false)
+        .ensure(&desktop::OutputMode { width: 0, height: 0, hz: 0, scale: 1.0 })?;
+    let mut cap = capture::Capturer::new(&monitor.device_name)?;
+    // The first duplicated frame can be empty; take the latest real update
+    // within a short window (a static desktop still delivers one at start).
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(1500) {
+        cap.grab(100)?;
+    }
+    if !cap.have_frame {
+        bail!("no desktop image");
+    }
+    let (w, h) = (cap.width, cap.height);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    unsafe {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        cap.frame.GetDesc(&mut desc);
+        let desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+            ..desc
+        };
+        let mut staging = None;
+        cap.gpu.device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+        let staging = staging.context("no staging texture")?;
+        cap.gpu.context.CopyResource(&staging, &cap.frame);
+        let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+        cap.gpu.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map))?;
+        for y in 0..h as usize {
+            let row = std::slice::from_raw_parts((map.pData as *const u8).add(y * map.RowPitch as usize), w as usize * 4);
+            for (x, px) in row.chunks(4).enumerate() {
+                let o = (y * w as usize + x) * 4;
+                rgba[o..o + 4].copy_from_slice(&[px[2], px[1], px[0], 255]);
+            }
+        }
+        cap.gpu.context.Unmap(&staging, 0);
+    }
+    let file = std::fs::File::create(out).with_context(|| format!("creating {out}"))?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(&rgba)?;
+    println!("{out}: {w}x{h} of {} at ({}, {})", monitor.device_name, monitor.rect.left, monitor.rect.top);
+    Ok(())
+}
+
 fn probe(display: &str, width: u32, height: u32, frames: u32, out: &str, software: bool) -> Result<()> {
     encoder::mf_startup()?;
     let monitor = ExistingMonitor::new(app::monitor_name(display), false).ensure(&desktop::OutputMode { width, height, hz: 60, scale: 1.0 })?;
@@ -336,7 +399,7 @@ fn probe(display: &str, width: u32, height: u32, frames: u32, out: &str, softwar
     let mut conv = encoder::Converter::new(&cap.gpu, cap.width, cap.height, width, height, 60)?;
     let mut enc = encoder::Encoder::new(
         &cap.gpu,
-        &encoder::EncoderConfig { width, height, fps: 60, bitrate: 8_000_000, prefer_software: software },
+        &encoder::EncoderConfig { width, height, fps: 60, bitrate: 8_000_000, prefer_software: software, low_power: false },
     )?;
     println!("capturing {} ({}x{}) with {}", monitor.device_name, cap.width, cap.height, enc.name);
     let mut file = std::fs::File::create(out).with_context(|| format!("creating {out}"))?;

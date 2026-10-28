@@ -1,11 +1,115 @@
-# opendisplay-win
+# OpenDisplay for Windows
 
-A Windows sender for [OpenDisplay](https://opendisplay.app): use an iPad or
-iPhone running the stock OpenDisplay app as a display for a Windows PC, over
-Wi-Fi or USB. It speaks the OpenDisplay wire protocol (`PROTOCOL.md`, pv 3),
-so the receiver app needs no changes.
+**Use your iPad or iPhone as a second screen for your Windows PC.** Connect it
+with a USB cable or over Wi-Fi, then drag windows onto it like onto any other
+monitor. Touch, scrolling and Apple Pencil work on the device.
 
-## Quick start
+It works with the free **OpenDisplay** app ([opendisplay.app](https://opendisplay.app),
+[App Store](https://apps.apple.com/us/app/opendisplay/id6780264891)), which so
+far only had a Mac version for the computer side. This is the Windows side.
+
+## Get started in 3 steps
+
+### 1. Download and unzip
+
+Download **OpenDisplay-Windows-x.y.z.zip** from the
+[latest release](https://github.com/vhdlmike/opendisplay-win/releases/latest) and
+unzip it to a folder you keep, e.g. `Documents\OpenDisplay`.
+
+### 2. Install the virtual screen (once)
+
+Double-click **`Install virtual display.cmd`** and click **Yes** in the Windows
+prompts. This adds an invisible extra monitor to Windows, which the iPad then
+shows. Without it, the iPad can only mirror your main screen.
+
+> Windows may say *"Windows protected your PC"* because the app is not
+> code-signed. Click **More info** > **Run anyway**.
+
+### 3. Connect
+
+1. Open the **OpenDisplay** app on the iPad/iPhone.
+2. Plug in the USB cable, or stay on the same Wi-Fi as the PC.
+3. Double-click **`OpenDisplay.exe`**.
+
+After a few seconds the iPad becomes your second screen, and Windows shows a
+notification. Arrange it left or right of your monitor in **Settings > System >
+Display**, like any monitor; Windows remembers where you put it.
+
+For USB, Windows needs Apple's device support, which comes with the
+**Apple Devices** app from the Microsoft Store (or iTunes). Wi-Fi needs nothing extra.
+
+## The tray icon
+
+OpenDisplay runs quietly in the background. You'll find its icon next to the
+clock (it may be hidden under the **^** arrow; drag it onto the taskbar to keep it visible).
+
+![OpenDisplay icon in the taskbar](docs/images/tray-icon.png)
+
+| Icon | Meaning |
+|---|---|
+| ![](docs/images/state-waiting.png) grey | Waiting for your iPad/iPhone. Open the OpenDisplay app on it. |
+| ![](docs/images/state-active.png) blue | Connected: the device is your second screen. |
+| ![](docs/images/state-warning.png) amber | Connected, but only mirroring the main screen, or something needs attention. Hover over the icon to see why. |
+
+Hover over the icon to see what it's doing, e.g. *"iPad over USB: second screen 2224x1668"*.
+
+## The menu
+
+Click the icon (left or right button) to open the menu:
+
+![OpenDisplay menu](docs/images/tray-menu.png)
+
+| Menu item | What it does |
+|---|---|
+| *(first line)* | What OpenDisplay is doing right now. |
+| **Extend: use as a second screen** | The iPad is an extra monitor. *(Recommended.)* |
+| **Mirror the main screen** | The iPad shows a copy of your main screen. |
+| **Connection** > Automatic | Uses the USB cable when plugged in (fastest), otherwise Wi-Fi. |
+| **Connection** > USB cable only / Wi-Fi only | Only use that connection. |
+| **Battery saver** > Off | Smoothest picture, up to 60 frames per second. |
+| **Battery saver** > On | 30 frames per second and less work for the graphics chip: noticeably longer laptop battery life, the picture stays sharp. |
+| **Battery saver** > Automatic | On while the laptop runs on battery (or Windows' energy saver is on), off when plugged in. |
+| **Start with Windows** | Start OpenDisplay automatically when you sign in. |
+| **Write log file** / **Open log file** | Keep a log for troubleshooting. |
+| **Install virtual display driver...** | Only shown if step 2 is missing. |
+| **Quit OpenDisplay** | Stop. The extra screen disappears and its windows move back to your main screen. |
+
+![Battery saver options](docs/images/tray-battery.png)
+
+## Everyday use
+
+- **Leave it running.** When the iPad locks, the app is closed or the cable is
+  pulled, OpenDisplay waits and reconnects by itself (switching to Wi-Fi if it can).
+- **Touch** moves the mouse: tap to click, drag to drag. **Two fingers** scroll.
+  **Apple Pencil** works as a pen, with pressure and tilt.
+- **Text too small or too big?** In Settings > System > Display, select the extra
+  screen and change **Scale**. OpenDisplay starts at 200% for Retina screens.
+
+## If something doesn't work
+
+| Problem | Try this |
+|---|---|
+| Icon stays grey | Open the OpenDisplay app on the device and keep it in front. For Wi-Fi: same network, and on the iPad allow *Settings > Privacy & Security > Local Network > OpenDisplay*. When Windows asks whether OpenDisplay may use the network, allow it. |
+| Icon is amber and the iPad mirrors | Run `Install virtual display.cmd` again. It also repairs the virtual screen if it got stuck. |
+| The iPad disconnects every second or two | Another computer or a second copy of OpenDisplay is connected to the same iPad. Only one can use it at a time. |
+| USB not found | Install the **Apple Devices** app (Microsoft Store), unlock the iPad, and tap *Trust* if it asks. |
+| Anything else | Turn on **Write log file** in the menu, reproduce the problem, then **Open log file** and include it in an [issue](https://github.com/vhdlmike/opendisplay-win/issues). |
+
+**Uninstall:** quit OpenDisplay, double-click `Uninstall virtual display.cmd`,
+then delete the folder.
+
+**Privacy and security:** everything stays between your PC and your device.
+There is no account and no cloud. The picture is sent unencrypted (like all
+OpenDisplay apps today), so use the cable or a network you trust.
+
+---
+
+## For developers
+
+opendisplay-win speaks the OpenDisplay wire protocol (`PROTOCOL.md`, pv 3)
+through the upstream sans-I/O crates, so the stock receiver apps need no changes.
+
+### Architecture overview
 
 **Tray app:** `OpenDisplay.exe` (`src/bin/OpenDisplay.rs`, GUI subsystem) runs
 the sender in the background with a notification-area icon showing the state
@@ -56,7 +160,7 @@ scroll drives the wheel, and Apple Pencil is injected as a Windows pen with
 pressure and tilt. `Ctrl+C` stops. By default the sender exits when the app is
 closed; `--stay` keeps waiting for it to come back.
 
-### Extended desktop (recommended) vs. mirror
+#### Extended desktop vs. mirror
 
 Windows only creates a monitor for a real display, so to *extend* the desktop
 you need a virtual display driver. Without one, `opendisplay-win` mirrors the
@@ -90,7 +194,7 @@ The monitor stays where you arranged it in Settings > Display.
 to switch it to the receiver's size for the session.
 `--display primary` mirrors the main screen.
 
-### Options
+#### Command-line options
 
 | Option | Meaning |
 |---|---|
@@ -99,12 +203,13 @@ to switch it to the receiver's size for the session.
 | `--bitrate <Mbit/s>` | override the bitrate (default from resolution: 6–40 Mbit/s on Wi-Fi, 8–80 on USB) |
 | `--software-encoder` | use Microsoft's CPU H.264 encoder instead of the GPU |
 | `--log debug` | verbose logs; receiver telemetry is logged as `PHONE-STATS` |
+| `--battery-saver` | 30 fps cap, 40% lower bitrate, fastest encoder preset, slower cursor polling |
 | `--for <seconds>` | stop after a while (scripted tests) |
 
 `opendisplay-win probe --display primary --out probe.h264` captures and encodes
 60 frames to a file without a receiver, to check the capture and encoder.
 
-## How it works
+### How it works
 
 | Layer | Implementation |
 |---|---|
@@ -116,8 +221,9 @@ to switch it to the receiver's size for the session.
 | Flow control | at most 2 encoded frames queued; a slow link lowers the capture rate instead of dropping encoded frames |
 | Virtual monitor | any IddCx virtual display driver; attach via `SetDisplayConfig(SDC_TOPOLOGY_EXTEND)`, mode via `ChangeDisplaySettingsEx`, scaling via the (undocumented) DisplayConfig DPI-scale info that Settings uses, detach on session end |
 | Input | `SetCursorPos` + `SendInput` (touch, wheel), `InjectSyntheticPointerInput` `PT_PEN` (Pencil) |
+| Battery saver | `desktop.max_fps` capped at 30, bitrate x0.6, `CODECAPI_AVEncCommonQualityVsSpeed` 0, cursor polled every 16 ms; the tray's Automatic mode follows `GetSystemPowerStatus` (on battery or energy saver) and `WM_POWERBROADCAST` |
 
-## Building
+### Building
 
 Cross-compiled from Linux/WSL, no Visual Studio needed:
 
@@ -128,19 +234,22 @@ cargo build --release      # target set in .cargo/config.toml
 cargo test                 # runs the Windows test exe (works from WSL)
 ```
 
-The result is a single static `target/x86_64-pc-windows-gnullvm/release/opendisplay-win.exe`.
+The results are static executables in `target/x86_64-pc-windows-gnullvm/release/`
+(`OpenDisplay.exe`, `opendisplay-win.exe`). `scripts/package.sh` builds the
+release zip in `dist/`.
 
-## Known limitations
+### Known limitations
 
 - The UDP cursor side channel (§6.3) has not been acknowledged by the iPad in
   testing, so cursor positions fall back to TCP, as the spec requires. Over
   Wi-Fi the pointer can then lag behind large frames.
 - No HEVC yet (`videoCaps` HEVC is ignored; H.264 is always offered by receivers).
-- No virtual display driver is bundled; extended mode needs the one-time setup above.
+- The bundled virtual display driver (MTT VDD 25.7.23) silently creates no monitor beyond ~85 modes, so
+  `packaging/make_vdd_settings.py` keeps the list at 41 (one per panel size at 60 Hz).
 - Per-monitor scaling uses an undocumented Windows interface. If a future
   Windows changes it, a warning is logged and the monitor keeps its scaling.
 - The link is unencrypted, as with all OpenDisplay senders at pv 3. Use trusted networks.
 
-## License
+### License
 
 GPL-3.0-only, like OpenDisplay, from which the protocol crates and `desktop.rs`/`latest.rs` come.
