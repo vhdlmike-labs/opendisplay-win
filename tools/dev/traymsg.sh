@@ -1,0 +1,11 @@
+#!/bin/bash
+# traymsg.sh <msg> <wparam> <lparam>: post a message to the OpenDisplay tray window.
+# traymsg.sh key <vk> | char <c>: send a key / character to the open popup menu.
+# traymsg.sh menurect: print the open popup menu's screen rectangle(s).
+PS_DEFS='Add-Type -Namespace W -Name U -MemberDefinition '"'"'[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr a, string c, string t); [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); public struct RECT { public int Left, Top, Right, Bottom; } [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);'"'"'; [void][W.U]::SetProcessDpiAwarenessContext([IntPtr]-4);'
+case "$1" in
+  key) powershell.exe -NoProfile -Command "$PS_DEFS \$m=[W.U]::FindWindow('#32768', [NullString]::Value); if (\$m -eq [IntPtr]::Zero) { 'no menu open' } else { [void][W.U]::PostMessage(\$m, 0x100, [IntPtr]$2, [IntPtr]0); 'key sent' }" | tr -d '\r' ;;
+  char) powershell.exe -NoProfile -Command "$PS_DEFS \$m=[W.U]::FindWindow('#32768', [NullString]::Value); if (\$m -eq [IntPtr]::Zero) { 'no menu open' } else { [void][W.U]::PostMessage(\$m, 0x102, [IntPtr][int][char]'$2', [IntPtr]0); 'char sent' }" | tr -d '\r' ;;
+  menurect) powershell.exe -NoProfile -Command "$PS_DEFS \$h=[IntPtr]::Zero; do { \$h=[W.U]::FindWindowEx([IntPtr]::Zero, \$h, '#32768', [NullString]::Value); if (\$h -ne [IntPtr]::Zero -and [W.U]::IsWindowVisible(\$h)) { \$r=New-Object W.U+RECT; [void][W.U]::GetWindowRect(\$h,[ref]\$r); '{0} {1} {2} {3}' -f \$r.Left,\$r.Top,\$r.Right,\$r.Bottom } } while (\$h -ne [IntPtr]::Zero)" | tr -d '\r' ;;
+  *) powershell.exe -NoProfile -Command "$PS_DEFS \$h=[W.U]::FindWindow('OpenDisplayTray', [NullString]::Value); if (\$h -eq [IntPtr]::Zero) { 'tray window not found' } else { [void][W.U]::PostMessage(\$h, $1, [IntPtr]$2, [IntPtr]$3); 'posted' }" | tr -d '\r' ;;
+esac
