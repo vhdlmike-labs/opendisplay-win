@@ -141,7 +141,7 @@ contains the exe, the signed virtual display driver, `Install virtual display.cm
 opendisplay-win list                      # receivers on Wi-Fi + USB, local monitors
 opendisplay-win run                       # the receiver: over USB when cabled, else Wi-Fi
 opendisplay-win run --to iPad             # by Bonjour name (or id fragment)
-opendisplay-win run --to 192.168.1.162    # by address
+opendisplay-win run --to 192.168.1.50     # by address
 opendisplay-win run --to usb              # over the cable (needs Apple Mobile Device Service)
 ```
 
