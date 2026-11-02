@@ -96,19 +96,40 @@ fn copy_files(from: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&to).with_context(|| format!("creating {INSTALL_DIR}"))?;
     for f in FILES {
         let dst = to.join(f);
+        if f != "vdd_settings.xml" {
+            std::fs::copy(from.join(f), &dst).with_context(|| format!("copying {f}"))?;
+            continue;
+        }
         // The bundled settings are known to work (the driver creates no
         // monitor with too many modes); keep a differing old file as .bak.
-        if f == "vdd_settings.xml" && dst.exists() {
+        let bundled = std::fs::read_to_string(from.join(f)).with_context(|| format!("reading {f}"))?;
+        let new = with_render_gpu(&bundled);
+        if dst.exists() {
             let old = std::fs::read(&dst).unwrap_or_default();
-            if old != std::fs::read(from.join(f)).unwrap_or_default() {
+            if old != new.as_bytes() {
                 let bak = to.join("vdd_settings.xml.bak");
                 let _ = std::fs::write(&bak, old);
                 println!("replaced vdd_settings.xml (previous one saved as {})", bak.display());
             }
         }
-        std::fs::copy(from.join(f), &dst).with_context(|| format!("copying {f}"))?;
+        std::fs::write(&dst, new).with_context(|| format!("writing {f}"))?;
     }
     Ok(to.join("MttVDD.inf"))
+}
+
+/// Point the driver at the integrated GPU on a multi-GPU PC. With
+/// `default` it renders on the GPU with the most video memory (the discrete
+/// one), which keeps that GPU awake and costs battery while streaming.
+fn with_render_gpu(settings: &str) -> String {
+    let Some((name, _)) = crate::capture::power_saving_adapter() else {
+        return settings.to_string();
+    };
+    println!("virtual monitor renders on: {name}");
+    let escaped = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    settings.replace(
+        "<friendlyname>default</friendlyname>",
+        &format!("<friendlyname>{escaped}</friendlyname>"),
+    )
 }
 
 fn install_elevated() -> Result<()> {

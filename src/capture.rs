@@ -2,7 +2,7 @@
 //! part of the duplicated image; it travels as `cursor`/`cursorImg` (§6.2).
 
 use anyhow::{Context, Result, bail};
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Foundation::{HMODULE, LUID};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -15,6 +15,65 @@ use windows::core::Interface;
 pub struct Gpu {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
+    /// The adapter's name, e.g. "AMD Radeon(TM) Graphics".
+    pub adapter: String,
+    /// The adapter's LUID, to pick encoders that run on it.
+    pub luid: LUID,
+}
+
+fn adapter_desc(adapter: &IDXGIAdapter1) -> (String, LUID, u32) {
+    match unsafe { adapter.GetDesc1() } {
+        Ok(d) => {
+            let name = String::from_utf16_lossy(&d.Description);
+            (name.trim_end_matches('\0').trim().to_string(), d.AdapterLuid, d.Flags)
+        }
+        Err(_) => ("unknown adapter".into(), LUID::default(), 0),
+    }
+}
+
+pub fn same_luid(a: LUID, b: LUID) -> bool {
+    a.LowPart == b.LowPart && a.HighPart == b.HighPart
+}
+
+/// Real GPUs (no software rasterizer), least dedicated video memory first,
+/// so an integrated GPU comes before a discrete one.
+fn hardware_adapters() -> Vec<(IDXGIAdapter1, String, LUID)> {
+    let mut out: Vec<(usize, IDXGIAdapter1, String, LUID)> = Vec::new();
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else { return Vec::new() };
+        for a in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(a) else { break };
+            let Ok(d) = adapter.GetDesc1() else { continue };
+            // 0x1414: Microsoft (Basic Render Driver and other virtual adapters).
+            if d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 || d.VendorId == 0x1414 {
+                continue;
+            }
+            let (name, luid, _) = adapter_desc(&adapter);
+            out.push((d.DedicatedVideoMemory, adapter, name, luid));
+        }
+    }
+    out.sort_by_key(|(mem, ..)| *mem);
+    out.into_iter().map(|(_, a, n, l)| (a, n, l)).collect()
+}
+
+/// Hardware adapters other than `except`, integrated first (hybrid laptops).
+pub fn other_adapters(except: LUID) -> Vec<IDXGIAdapter1> {
+    hardware_adapters()
+        .into_iter()
+        .filter(|(_, _, l)| !same_luid(*l, except))
+        .map(|(a, ..)| a)
+        .collect()
+}
+
+/// On a PC with more than one GPU, the integrated (power-saving) one, as
+/// (name, LUID): the virtual monitor should render there so the discrete
+/// GPU can stay asleep. `None` with a single GPU.
+pub fn power_saving_adapter() -> Option<(String, LUID)> {
+    let all = hardware_adapters();
+    if all.len() < 2 {
+        return None;
+    }
+    all.into_iter().next().map(|(_, n, l)| (n, l))
 }
 
 /// The adapter and output that scan out `device_name` (`\\.\DISPLAYn`).
@@ -60,9 +119,12 @@ pub fn create_device(adapter: &IDXGIAdapter1) -> Result<Gpu> {
         if let Ok(mt) = device.cast::<ID3D11Multithread>() {
             let _ = mt.SetMultithreadProtected(true);
         }
+        let (name, luid, _) = adapter_desc(adapter);
         Ok(Gpu {
             device,
             context: context.context("no context")?,
+            adapter: name,
+            luid,
         })
     }
 }

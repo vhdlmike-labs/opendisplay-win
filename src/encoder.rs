@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use opendisplay_proto::video::{NalType, nal_units, normalize_start_codes};
 use tracing::{debug, info, warn};
-use windows::Win32::Foundation::{RECT, TRUE};
+use windows::Win32::Foundation::{LUID, RECT, TRUE};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Media::MediaFoundation::*;
@@ -18,7 +18,7 @@ use windows::Win32::System::Com::{CoTaskMemFree, CoInitializeEx, COINIT_MULTITHR
 use windows::Win32::System::Variant::VARIANT;
 use windows::core::{GUID, Interface};
 
-use crate::capture::Gpu;
+use crate::capture::{Gpu, create_device, other_adapters};
 
 /// How many NV12 surfaces the converter rotates through, so the encoder can
 /// still be reading one while the next is written.
@@ -150,6 +150,7 @@ impl Converter {
 // ---------------------------------------------------------------------------
 // Media Foundation encoder
 
+#[derive(Clone, Copy)]
 pub struct EncoderConfig {
     pub width: u32,
     pub height: u32,
@@ -174,13 +175,16 @@ pub struct Encoder {
     _manager: Option<IMFDXGIDeviceManager>,
     /// Software path: NV12 staging texture to read frames back.
     staging: Option<ID3D11Texture2D>,
+    /// Encoder on another GPU than the capture: copies frames across.
+    bridge: Option<Bridge>,
     context: ID3D11DeviceContext,
     need_input: u32,
     provides_samples: bool,
     out_size: u32,
     cfg_w: u32,
     cfg_h: u32,
-    fps: u32,
+    /// The frame rate the encoder was set up for (software: capped).
+    pub fps: u32,
     frame_index: u64,
     sequence_header: Vec<u8>,
 }
@@ -212,19 +216,30 @@ fn media_type(sub: &GUID, cfg: &EncoderConfig) -> Result<IMFMediaType> {
     }
 }
 
-/// Hardware H.264 encoder MFTs, best first, as (name, activate).
-fn hardware_encoders() -> Vec<(String, IMFActivate)> {
+/// Hardware H.264 encoder MFTs that run on the adapter `luid`, best first,
+/// as (name, activate). An encoder only accepts a D3D device on its own GPU.
+fn hardware_encoders(luid: LUID) -> Vec<(String, IMFActivate)> {
     let mut out = Vec::new();
     unsafe {
         let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
         let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+        let mut attrs = None;
+        if MFCreateAttributes(&mut attrs, 1).is_err() {
+            return out;
+        }
+        let Some(attrs) = attrs else { return out };
+        let bytes = std::slice::from_raw_parts(&luid as *const LUID as *const u8, size_of::<LUID>());
+        if attrs.SetBlob(&MFT_ENUM_ADAPTER_LUID, bytes).is_err() {
+            return out;
+        }
         let mut arr: *mut Option<IMFActivate> = std::ptr::null_mut();
         let mut count = 0u32;
-        if MFTEnumEx(
+        if MFTEnum2(
             MFT_CATEGORY_VIDEO_ENCODER,
             MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
             Some(&input),
             Some(&output),
+            &attrs,
             &mut arr,
             &mut count,
         )
@@ -249,20 +264,143 @@ fn hardware_encoders() -> Vec<(String, IMFActivate)> {
     out
 }
 
+/// The software encoder's frame-rate cap: it costs whole CPU cores, and at
+/// 60 fps on large Retina panels it cannot keep up anyway.
+pub const SOFTWARE_MAX_FPS: u32 = 30;
+
+fn nv12_texture(gpu: &Gpu, w: u32, h: u32, usage: D3D11_USAGE, bind: u32, cpu: u32) -> Result<ID3D11Texture2D> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: w,
+        Height: h,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_NV12,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: usage,
+        BindFlags: bind,
+        CPUAccessFlags: cpu,
+        MiscFlags: 0,
+    };
+    let mut tex = None;
+    unsafe { gpu.device.CreateTexture2D(&desc, None, Some(&mut tex))? };
+    tex.context("no NV12 texture")
+}
+
+/// Hands NV12 frames from the capture GPU to an encoder on another GPU
+/// (hybrid laptops, where the monitor and the working encoder sit on
+/// different adapters), through system memory.
+struct Bridge {
+    src_context: ID3D11DeviceContext,
+    src_staging: ID3D11Texture2D,
+    dst: Gpu,
+    dst_staging: ID3D11Texture2D,
+    ring: Vec<ID3D11Texture2D>,
+    next: usize,
+    width: usize,
+    height: usize,
+}
+
+impl Bridge {
+    fn new(src: &Gpu, dst: Gpu, w: u32, h: u32) -> Result<Self> {
+        let src_staging = nv12_texture(src, w, h, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32)?;
+        let dst_staging = nv12_texture(&dst, w, h, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_WRITE.0 as u32)?;
+        let mut ring = Vec::new();
+        for _ in 0..RING {
+            let t = nv12_texture(&dst, w, h, D3D11_USAGE_DEFAULT, D3D11_BIND_VIDEO_ENCODER.0 as u32, 0)
+                .or_else(|_| nv12_texture(&dst, w, h, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET.0 as u32, 0))?;
+            ring.push(t);
+        }
+        Ok(Self {
+            src_context: src.context.clone(),
+            src_staging,
+            dst,
+            dst_staging,
+            ring,
+            next: 0,
+            width: w as usize,
+            height: h as usize,
+        })
+    }
+
+    /// Copy `nv12` (capture GPU) into the next ring texture on the encoder's GPU.
+    fn copy(&mut self, nv12: &ID3D11Texture2D) -> Result<ID3D11Texture2D> {
+        unsafe {
+            self.src_context.CopyResource(&self.src_staging, nv12);
+            let mut src = D3D11_MAPPED_SUBRESOURCE::default();
+            self.src_context.Map(&self.src_staging, 0, D3D11_MAP_READ, 0, Some(&mut src))?;
+            let mut dst = D3D11_MAPPED_SUBRESOURCE::default();
+            if let Err(e) = self.dst.context.Map(&self.dst_staging, 0, D3D11_MAP_WRITE, 0, Some(&mut dst)) {
+                self.src_context.Unmap(&self.src_staging, 0);
+                return Err(e.into());
+            }
+            let (sp, dp) = (src.RowPitch as usize, dst.RowPitch as usize);
+            let (s, d) = (src.pData as *const u8, dst.pData as *mut u8);
+            // Y rows, then the interleaved UV rows (each plane at pitch * height).
+            for row in 0..self.height {
+                std::ptr::copy_nonoverlapping(s.add(row * sp), d.add(row * dp), self.width);
+            }
+            let (s_uv, d_uv) = (s.add(sp * self.height), d.add(dp * self.height));
+            for row in 0..self.height / 2 {
+                std::ptr::copy_nonoverlapping(s_uv.add(row * sp), d_uv.add(row * dp), self.width);
+            }
+            self.dst.context.Unmap(&self.dst_staging, 0);
+            self.src_context.Unmap(&self.src_staging, 0);
+            let tex = self.ring[self.next].clone();
+            self.next = (self.next + 1) % RING;
+            self.dst.context.CopyResource(&tex, &self.dst_staging);
+            Ok(tex)
+        }
+    }
+}
+
 impl Encoder {
+    /// The best encoder for frames on `gpu`: a hardware encoder on the same
+    /// GPU, else one on another GPU (frames copied across), else software.
     pub fn new(gpu: &Gpu, cfg: &EncoderConfig) -> Result<Self> {
         if !cfg.prefer_software {
-            for (name, activate) in hardware_encoders() {
-                match Self::new_hardware(gpu, cfg, &name, &activate) {
-                    Ok(e) => return Ok(e),
+            if let Some(e) = Self::try_hardware(gpu, cfg) {
+                return Ok(e);
+            }
+            for adapter in other_adapters(gpu.luid) {
+                let other = match create_device(&adapter) {
+                    Ok(g) => g,
                     Err(e) => {
-                        warn!("{name}: {e:#}; trying the next encoder");
-                        unsafe { let _ = activate.ShutdownObject(); }
+                        debug!("other GPU: {e:#}");
+                        continue;
                     }
+                };
+                if let Some(mut e) = Self::try_hardware(&other, cfg) {
+                    info!(
+                        "the screen is on {}, the encoder on {}: copying frames between the GPUs",
+                        gpu.adapter, other.adapter
+                    );
+                    e.bridge = Some(Bridge::new(gpu, other, cfg.width, cfg.height)?);
+                    return Ok(e);
                 }
             }
         }
-        Self::new_software(gpu, cfg)
+        let fps = cfg.fps.min(SOFTWARE_MAX_FPS);
+        if fps < cfg.fps {
+            info!("software encoding: capped at {fps} fps");
+        }
+        Self::new_software(gpu, &EncoderConfig { fps, ..*cfg })
+    }
+
+    fn try_hardware(gpu: &Gpu, cfg: &EncoderConfig) -> Option<Self> {
+        let encoders = hardware_encoders(gpu.luid);
+        if encoders.is_empty() {
+            info!("no hardware H.264 encoder on {}", gpu.adapter);
+        }
+        for (name, activate) in encoders {
+            match Self::new_hardware(gpu, cfg, &name, &activate) {
+                Ok(e) => return Some(e),
+                Err(e) => {
+                    warn!("{name} on {}: {e:#}; trying the next encoder", gpu.adapter);
+                    unsafe { let _ = activate.ShutdownObject(); }
+                }
+            }
+        }
+        None
     }
 
     fn configure(mft: &IMFTransform, cfg: &EncoderConfig) -> Result<Option<ICodecAPI>> {
@@ -368,6 +506,7 @@ impl Encoder {
             codec,
             _manager: manager,
             staging: None,
+            bridge: None,
             context: gpu.context.clone(),
             need_input: 0,
             provides_samples,
@@ -435,6 +574,14 @@ impl Encoder {
                 self.context.Unmap(staging, 0);
                 buffer
             } else {
+                let copied;
+                let nv12 = match self.bridge.as_mut() {
+                    Some(b) => {
+                        copied = b.copy(nv12)?;
+                        &copied
+                    }
+                    None => nv12,
+                };
                 let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, nv12, 0, false)?;
                 if let Ok(b2) = buffer.cast::<IMF2DBuffer>() {
                     buffer.SetCurrentLength(b2.GetContiguousLength()?)?;

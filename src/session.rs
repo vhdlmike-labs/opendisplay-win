@@ -88,6 +88,26 @@ enum Outcome {
     Lost,
     Sleeping,
     Closing,
+    /// Another Windows session took over the screen (fast user switching).
+    Inactive,
+}
+
+/// Whether this process runs in the Windows session at the physical screen.
+/// With several users signed in, each may run OpenDisplay ("Start with
+/// Windows" is per user); the per-session lock can't stop them, and the
+/// receiver always adopts the newest connection, so only the session at the
+/// screen may stream.
+pub fn session_is_active() -> bool {
+    use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    unsafe {
+        let mut mine = 0u32;
+        if ProcessIdToSessionId(GetCurrentProcessId(), &mut mine).is_err() {
+            return true;
+        }
+        // 0xFFFFFFFF: between sessions (switching users); wait it out.
+        WTSGetActiveConsoleSessionId() == mine
+    }
 }
 
 pub struct Clock(Instant);
@@ -116,7 +136,25 @@ pub fn run(target: Target, backend: Box<dyn DisplayBackend>, opts: Options, stop
     let mut allow_usb = true;
     // Sessions the receiver ended within seconds of starting, in a row.
     let mut short_lived = 0u32;
+    // Sessions in a row that began while another sender held the receiver.
+    let mut contested = 0u32;
+    let mut waiting_for_screen = false;
     while !stop.load(Ordering::Relaxed) {
+        if !session_is_active() {
+            if !waiting_for_screen {
+                info!("another Windows user is at the screen; waiting until this session is active again");
+                report(Status::Searching);
+                release();
+                waiting_for_screen = true;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        if waiting_for_screen {
+            info!("this Windows session is active again");
+            waiting_for_screen = false;
+            failures = 0;
+        }
         if failures == 0 {
             info!("dialing {}", target.describe());
         }
@@ -135,7 +173,21 @@ pub fn run(target: Target, backend: Box<dyn DisplayBackend>, opts: Options, stop
         let peer = stream.peer_addr().ok().map(|a| a.ip());
         info!("connected over {}", if usb { "USB" } else { "Wi-Fi/LAN" });
         let started = Instant::now();
-        match connection(&clock, stream, peer, usb, target.expected_id(), &backend, &opts, &stop) {
+        let mut rival = false;
+        let outcome = connection(&clock, stream, peer, usb, target.expected_id(), &backend, &opts, &stop, &mut rival);
+        if rival && matches!(outcome, Ok(Outcome::Lost)) {
+            contested += 1;
+            if contested == 3 {
+                warn!(
+                    "another sender keeps taking this device over (it was connected to it each time this \
+                     sender reconnected). Quit OpenDisplay on the other sender: another Windows user \
+                     signed in on this PC, another PC, or a Mac"
+                );
+            }
+        } else {
+            contested = 0;
+        }
+        match outcome {
             Ok(Outcome::WrongDevice) => {
                 warn!("the device on USB is not the requested receiver; using Wi-Fi");
                 allow_usb = false;
@@ -149,6 +201,10 @@ pub fn run(target: Target, backend: Box<dyn DisplayBackend>, opts: Options, stop
                     break;
                 }
                 release();
+            }
+            Ok(Outcome::Inactive) => {
+                // The loop above waits for the screen to come back.
+                report(Status::Searching);
             }
             Ok(Outcome::Sleeping) => {
                 info!("receiver is asleep; waiting for it to come back");
@@ -241,12 +297,13 @@ fn pipeline_loop(
 ) -> Result<()> {
     let mut cap = Capturer::new(device_name)?;
     let mut conv = Converter::new(&cap.gpu, cap.width, cap.height, cfg.width, cfg.height, cfg.fps)?;
+    warn_if_discrete(&cap.gpu);
     let mut enc = Encoder::new(&cap.gpu, cfg)?;
     info!(
-        "capturing {device_name} {}x{} -> {} {}x{} @{} {:.1} Mbit/s",
-        cap.width, cap.height, enc.name, cfg.width, cfg.height, cfg.fps, cfg.bitrate as f64 / 1e6
+        "capturing {device_name} {}x{} on {} -> {} {}x{} @{} {:.1} Mbit/s",
+        cap.width, cap.height, cap.gpu.adapter, enc.name, cfg.width, cfg.height, enc.fps, cfg.bitrate as f64 / 1e6
     );
-    let interval = Duration::from_secs_f64(1.0 / cfg.fps as f64);
+    let interval = Duration::from_secs_f64(1.0 / enc.fps as f64);
     let mut next_due = Instant::now();
     let mut dirty = false;
     let mut cap_ms = wall_ms();
@@ -290,6 +347,22 @@ fn pipeline_loop(
         }
     }
     Ok(())
+}
+
+/// A virtual monitor rendered on the discrete GPU keeps it awake (and the
+/// driver picks the GPU with the most memory unless told otherwise).
+fn warn_if_discrete(gpu: &crate::capture::Gpu) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if let Some((name, luid)) = crate::capture::power_saving_adapter() {
+        if !crate::capture::same_luid(luid, gpu.luid) && !WARNED.swap(true, Ordering::Relaxed) {
+            warn!(
+                "the screen being streamed renders on {}, not on the power-saving {name}; \
+                 run \"Install virtual display.cmd\" (or `opendisplay-win install-driver`) again \
+                 to move the virtual monitor to {name}",
+                gpu.adapter
+            );
+        }
+    }
 }
 
 /// Polls the pointer and sprite for the streamed monitor.
@@ -372,8 +445,12 @@ fn connection(
     backend: &SharedDisplay,
     opts: &Options,
     stop: &AtomicBool,
+    rival: &mut bool,
 ) -> Result<Outcome> {
     let (tx, rx): (Sender<Event>, Receiver<Event>) = mpsc::channel();
+    let connected_at = Instant::now();
+    let mut hellos = 0u32;
+    let mut active_checked = Instant::now();
 
     // Reader.
     let mut reader = stream.try_clone()?;
@@ -460,6 +537,14 @@ fn connection(
                     }
                 }
                 SenderAction::Hello(h) => {
+                    // A receiver that is still connected to another sender
+                    // greets a newcomer twice: provisionally, then again once
+                    // the newcomer has proved itself and is adopted.
+                    hellos += 1;
+                    if hellos == 2 && connected_at.elapsed() < Duration::from_millis(500) {
+                        *rival = true;
+                        debug!("the receiver was connected to another sender");
+                    }
                     device_name = h.device.clone().unwrap_or_else(|| "device".into());
                     if let (true, Some(want), Some(got)) = (usb, expected_id, h.id.as_deref()) {
                         if !want.eq_ignore_ascii_case(got) {
@@ -658,6 +743,13 @@ fn connection(
         // the liveness check stay on schedule (the session pings only when due).
         let mut t = session.handle(clock.now(), SenderEvent::Tick);
         pending.append(&mut t);
+        if active_checked.elapsed() >= Duration::from_secs(1) {
+            active_checked = Instant::now();
+            if !session_is_active() {
+                info!("another Windows user is at the screen; disconnecting");
+                break Outcome::Inactive;
+            }
+        }
     };
 
     session.handle(clock.now(), SenderEvent::Disconnected);

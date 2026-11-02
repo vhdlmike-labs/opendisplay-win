@@ -1,6 +1,6 @@
 [package]
 name = "opendisplay-win"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Windows sender for OpenDisplay: extend a Windows desktop onto an iPad/iPhone running the OpenDisplay receiver"
@@ -46,6 +46,7 @@ features = [
     "Win32_System_Ole",
     "Win32_System_Power",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_Ioctl",
     "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",

@@ -81,9 +81,17 @@ Troubleshooting
   Windows Firewall allows opendisplay-win. You can also connect directly:
       opendisplay-win.exe run --to 192.168.1.50      (the device's IP)
       opendisplay-win.exe run --to usb
-- The device keeps disconnecting every second or two: another sender
-  (a second opendisplay-win, or a Mac) is connected to the same device.
-  Only one can drive it.
+- The device keeps disconnecting (every few seconds, or every 15 seconds or
+  so), or the log says "another sender keeps taking this device over":
+  another sender is connected to the same device, and only one can drive
+  it. Check other Windows users signed in on this PC (Task Manager > Users;
+  OpenDisplay there pauses itself from version 0.2.4 on, older versions do
+  not), other PCs and Macs.
+- The device keeps disconnecting every 15 seconds or so, or the log says
+  "the screen being streamed renders on <NVIDIA ...>": on a laptop with two
+  graphics chips, run "Install virtual display.cmd" again. It moves the
+  virtual screen to the integrated (power-saving) chip, where the hardware
+  video encoder works and the discrete one can stay asleep.
 - The device only mirrors the main screen: test the virtual screen alone,
   without the device:
       opendisplay-win.exe virtual-display on --log
