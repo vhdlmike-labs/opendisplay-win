@@ -21,7 +21,7 @@ use crate::{discover, driver};
 pub struct RunConfig {
     /// See `discover::resolve`: name/id, ip, `usb`, `wifi`, or `None` (USB, else Wi-Fi).
     pub to: Option<String>,
-    /// `auto`, `virtual`, `primary` or `DISPLAYn`.
+    /// `auto`, `virtual`, `primary`, `DISPLAYn`, or `path:<monitor device path>`.
     pub display: String,
     pub resize: Option<bool>,
     pub desktop: DesktopOptions,
@@ -64,6 +64,9 @@ pub fn backend(display: &str, resize: Option<bool>) -> Box<dyn DisplayBackend> {
         "auto" => return Box::new(display::AutoDisplay::new(driver::installed)),
         "virtual" => return Box::new(display::VirtualMonitor::new()),
         _ => {}
+    }
+    if let Some(path) = display.strip_prefix("path:") {
+        return Box::new(ExistingMonitor::by_path(path.to_string()));
     }
     let name = monitor_name(display);
     let resize = resize.unwrap_or(false) && name.is_some();

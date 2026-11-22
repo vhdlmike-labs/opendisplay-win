@@ -63,7 +63,7 @@ Click the icon (left or right button) to open the menu:
 |---|---|
 | *(first line)* | What OpenDisplay is doing right now. |
 | **Extend: use as a second screen** | The iPad is an extra monitor. *(Recommended.)* |
-| **Mirror the main screen** | The iPad shows a copy of your main screen. |
+| **Mirror a screen** > Main screen / *(your other screens)* | The iPad shows a copy of that screen, as it is (it is not resized). Pick a specific screen if you have several. |
 | **Connection** > Automatic | Uses the USB cable when plugged in (fastest), otherwise Wi-Fi. |
 | **Connection** > USB cable only / Wi-Fi only | Only use that connection. |
 | **Battery saver** > Off | Smoothest picture, up to 60 frames per second. |
@@ -193,6 +193,12 @@ The monitor stays where you arranged it in Settings > Display.
 `--display DISPLAYn` streams a specific monitor as it is. Add `--resize true`
 to switch it to the receiver's size for the session.
 `--display primary` mirrors the main screen.
+
+Windows' own "Duplicate these displays" setting is not how you mirror with
+OpenDisplay: Extend turns it off for the virtual screen on every connection
+(a fresh driver install starts out duplicated, and that has to become an extra
+screen). To show one of your screens on the iPad, use **Mirror a screen** in the
+tray menu, or `--display DISPLAYn` (`opendisplay-win monitors` lists the names).
 
 #### Command-line options
 

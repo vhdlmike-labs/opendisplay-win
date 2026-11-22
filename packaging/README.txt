@@ -44,7 +44,8 @@ The icon shows the state:
    blue   streaming: the device is your second screen
    amber  mirroring although "Extend" is selected, or a problem
 Hover over it for details, click it (left or right) for the menu:
-   Extend: use as a second screen / Mirror the main screen
+   Extend: use as a second screen / Mirror a screen (the main one, or any
+      other screen of this PC: the device shows a copy of it)
    Connection: Automatic (USB, else Wi-Fi) / USB cable only / Wi-Fi only
    Battery saver: Off (smoothest, up to 60 fps) / On (30 fps, less GPU and
       battery use, picture stays sharp) / Automatic (on while on battery)
@@ -92,6 +93,9 @@ Troubleshooting
   graphics chips, run "Install virtual display.cmd" again. It moves the
   virtual screen to the integrated (power-saving) chip, where the hardware
   video encoder works and the discrete one can stay asleep.
+- You set Windows to "Duplicate" the device's screen with another one and
+  the device only shows wallpaper: OpenDisplay turns that off. Choose
+  Mirror a screen in the tray menu instead, and pick the screen to copy.
 - The device only mirrors the main screen: test the virtual screen alone,
   without the device:
       opendisplay-win.exe virtual-display on --log

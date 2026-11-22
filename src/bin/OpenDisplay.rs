@@ -13,6 +13,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use opendisplay_win::app::{self, RunConfig, SingleInstance};
+use opendisplay_win::display;
 use opendisplay_win::driver;
 use opendisplay_win::session::Status;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,8 @@ const WM_MENU_AT_ICON: u32 = WM_APP + 3;
 const ID_STATUS: usize = 1;
 const ID_EXTEND: usize = 10;
 const ID_MIRROR: usize = 11;
+/// Mirror one specific screen: ID_MIRROR_SCREEN + index into `MIRROR_CHOICES`.
+const ID_MIRROR_SCREEN: usize = 100;
 const ID_CONN_AUTO: usize = 20;
 const ID_CONN_USB: usize = 21;
 const ID_CONN_WIFI: usize = 22;
@@ -93,10 +96,32 @@ fn on_battery() -> bool {
     ok && (ps.ACLineStatus == 0 || ps.SystemStatusFlag == 1)
 }
 
+/// The screens offered in the Mirror submenu the last time it was built
+/// (monitor device paths), so a menu command can be mapped back to one.
+static MIRROR_CHOICES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// The real (non-virtual) screens: (device path, label for the menu).
+fn mirror_screens() -> Vec<(String, String)> {
+    display::monitors()
+        .into_iter()
+        .filter(|m| !display::looks_virtual(m) && !m.device_path.is_empty())
+        .map(|m| {
+            let name = if m.friendly.is_empty() { m.device_name.trim_start_matches(r"\\.\").to_string() } else { m.friendly.clone() };
+            let (w, h) = m.size();
+            let main = if m.primary { ", main" } else { "" };
+            (m.device_path.clone(), format!("{name} ({w}x{h}{main})"))
+        })
+        .collect()
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 struct Settings {
     display: DisplayMode,
+    /// With `Mirror`: the device path of the screen to mirror, or the main screen.
+    mirror_screen: Option<String>,
+    /// Its name for the status text.
+    mirror_label: String,
     connection: Connection,
     battery_saver: BatterySaver,
     log_file: bool,
@@ -149,7 +174,10 @@ impl Settings {
             },
             display: match self.display {
                 DisplayMode::Extend => "auto".into(),
-                DisplayMode::Mirror => "primary".into(),
+                DisplayMode::Mirror => match &self.mirror_screen {
+                    Some(path) => format!("path:{path}"),
+                    None => "primary".into(),
+                },
             },
             ..RunConfig::default()
         }
@@ -321,7 +349,11 @@ impl Ui {
                 if *extended {
                     (format!("{device} over {link}: second screen {width}x{height}"), 2)
                 } else {
-                    (format!("{device} over {link}: mirroring the main screen"), if mirror_chosen { 2 } else { 3 })
+                    let what = match (&self.settings.mirror_screen, mirror_chosen) {
+                        (Some(_), true) if !self.settings.mirror_label.is_empty() => self.settings.mirror_label.clone(),
+                        _ => "the main screen".into(),
+                    };
+                    (format!("{device} over {link}: mirroring {what}"), if mirror_chosen { 2 } else { 3 })
                 }
             }
             TrayStatus::Status(Status::DeviceAsleep) => ("Device locked; reconnects when unlocked".into(), 1),
@@ -394,7 +426,20 @@ impl Ui {
             add(menu, MF_SEPARATOR, 0, "");
 
             add(menu, MF_STRING | check(self.settings.display == DisplayMode::Extend), ID_EXTEND, "&Extend: use as a second screen");
-            add(menu, MF_STRING | check(self.settings.display == DisplayMode::Mirror), ID_MIRROR, "&Mirror the main screen");
+            if let Ok(mirror) = CreatePopupMenu() {
+                let mirroring = self.settings.display == DisplayMode::Mirror;
+                let chosen = self.settings.mirror_screen.as_deref();
+                add(mirror, MF_STRING | check(mirroring && chosen.is_none()), ID_MIRROR, "&Main screen");
+                let screens = mirror_screens();
+                for (i, (path, label)) in screens.iter().enumerate() {
+                    let on = mirroring && chosen.is_some_and(|c| c.eq_ignore_ascii_case(path));
+                    add(mirror, MF_STRING | check(on), ID_MIRROR_SCREEN + i, &format!("{label}"));
+                }
+                *MIRROR_CHOICES.lock().unwrap_or_else(|e| e.into_inner()) = screens;
+                let label = if mirroring { "&Mirror a screen (active)" } else { "&Mirror a screen" };
+                let t = wide(label);
+                let _ = AppendMenuW(menu, MF_POPUP, mirror.0 as usize, PCWSTR(t.as_ptr()));
+            }
             add(menu, MF_SEPARATOR, 0, "");
 
             if let Ok(conn) = CreatePopupMenu() {
@@ -437,9 +482,26 @@ impl Ui {
                 s.display = DisplayMode::Extend;
                 self.apply();
             }
-            ID_MIRROR if s.display != DisplayMode::Mirror => {
+            ID_MIRROR if s.display != DisplayMode::Mirror || s.mirror_screen.is_some() => {
                 s.display = DisplayMode::Mirror;
+                s.mirror_screen = None;
+                s.mirror_label.clear();
                 self.apply();
+            }
+            id if id >= ID_MIRROR_SCREEN && id < ID_MIRROR_SCREEN + 64 => {
+                let choice = MIRROR_CHOICES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(id - ID_MIRROR_SCREEN)
+                    .cloned();
+                if let Some((path, label)) = choice {
+                    if s.display != DisplayMode::Mirror || s.mirror_screen.as_deref() != Some(path.as_str()) {
+                        s.display = DisplayMode::Mirror;
+                        s.mirror_screen = Some(path);
+                        s.mirror_label = label;
+                        self.apply();
+                    }
+                }
             }
             ID_CONN_AUTO | ID_CONN_USB | ID_CONN_WIFI => {
                 let c = match id {

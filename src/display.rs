@@ -427,7 +427,10 @@ fn attach_virtual(mode: &OutputMode, loud: bool) {
         ids.sort_unstable();
         let mut q = p;
         q.sourceInfo.id = *ids.first()?;
-        info!("the virtual monitor duplicates another screen; switching it to extend");
+        info!(
+            "the virtual monitor is duplicated with another screen (a Windows \"Mirror\" setting); \
+             switching it to extend. To mirror a screen on the device, choose it under Mirror in the tray menu"
+        );
         Some(q)
     };
     let Some(candidate) = free.or_else(cloned) else {
@@ -648,17 +651,31 @@ fn looks_virtual_path(friendly: &str, device_path: &str) -> bool {
 /// an extended display) and put the original mode back on release.
 pub struct ExistingMonitor {
     pub device_name: Option<String>,
+    /// Pick the monitor by its device interface path instead (it survives
+    /// the `\\.\DISPLAYn` numbers changing); falls back to the primary one.
+    device_path: Option<String>,
     pub resize: bool,
     original: Option<(String, u32, u32)>,
 }
 
 impl ExistingMonitor {
     pub fn new(device_name: Option<String>, resize: bool) -> Self {
-        Self { device_name, resize, original: None }
+        Self { device_name, device_path: None, resize, original: None }
+    }
+
+    pub fn by_path(device_path: String) -> Self {
+        Self { device_name: None, device_path: Some(device_path), resize: false, original: None }
     }
 
     fn find(&self) -> Result<Monitor> {
         let all = monitors();
+        if let Some(path) = &self.device_path {
+            if let Some(m) = all.iter().find(|m| m.device_path.eq_ignore_ascii_case(path)) {
+                return Ok(m.clone());
+            }
+            tracing::warn!("the chosen screen is not connected; mirroring the main screen instead");
+            return all.into_iter().find(|m| m.primary).context("no primary monitor");
+        }
         match &self.device_name {
             Some(n) => all
                 .into_iter()
@@ -730,7 +747,21 @@ impl DisplayBackend for ExistingMonitor {
 
 #[cfg(test)]
 mod tests {
-    use super::best_mode;
+    use super::{ExistingMonitor, best_mode, monitors};
+
+    #[test]
+    fn mirror_by_path_picks_that_screen_or_falls_back_to_primary() {
+        let all = monitors();
+        if all.is_empty() {
+            return; // no desktop (service session)
+        }
+        for m in all.iter().filter(|m| !m.device_path.is_empty()) {
+            let found = ExistingMonitor::by_path(m.device_path.to_uppercase()).find().unwrap();
+            assert_eq!(found.device_name, m.device_name);
+        }
+        let fallback = ExistingMonitor::by_path(r"\\?\DISPLAY#NOPE#1".into()).find().unwrap();
+        assert!(fallback.primary);
+    }
 
     #[test]
     fn picks_exact_then_same_aspect_that_fits() {
